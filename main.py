@@ -1,8 +1,11 @@
-from fastapi import FastAPI, File, UploadFile
-from pydantic import BaseModel
+from fastapi import (
+    FastAPI, File, UploadFile,
+    HTTPException
+)
+from fastapi.responses import StreamingResponse
 
 from pathlib import Path
-from typing import Optional
+from typing import Iterator
 import asyncio
 
 import modules.extras as extras
@@ -14,59 +17,56 @@ app = FastAPI(
     openapi_url=None
 )
 
-result = Path("modules")
-result.mkdir(exist_ok=True)
-
 # test code
 @app.get("/")
 async def home():
     return {"Hello": "World"}
-
-class Result(BaseModel):
-    filename: str
-    status: str
-    reason: Optional[str]
 
 #"Hello/Bo/HelloWorld.txt" -> Path("HelloWorld.txt")
 def check_filename(filename: str | None) -> Path | None:
     if not filename: return None
     
     file: Path = Path(filename)
-    
-    name = file.stem
-    suffix = file.suffix
+    suffix: str = file.suffix.lower()
 
-    # I'm not boutta let myself screw everything up in the future. Better safe than sorry
-    # If Its not a valid suffix then ur outta heere
-    if not suffix in const.VIDEO_EXT or \
-        not suffix in const.IMAGE_EXT:
+    target_dir: Path | None = extras.get_target_dir(suffix)
+    if not target_dir:
         return None
     
-    return Path(name + suffix)
+    candidate = target_dir / file.name
+    if not candidate.exists():
+        return candidate
+    
+    while True:
+        name = f"{file.stem}_{extras.generate_unique_name(8)}{suffix}"
+        candidate = target_dir / name
+
+        if not candidate.exists():
+            return candidate
+    
 
 #will handle files asynchronously
-async def handle_file(file: UploadFile, sem: asyncio.Semaphore) -> Result:
-    print(file.file.mode)
+# *hold on to the file size in the future*
+async def handle_file(file: UploadFile, sem: asyncio.Semaphore) -> const.Result:
     async with sem:
         print(f"Handling file: {file.filename}")
 
         filename: Path | None = check_filename(file.filename)
         if not filename:
-            print(f"{file.filename or '(none)'} was deported")
-            return Result(
+            return const.Result(
                 filename = file.filename or "(none)",
                 status = "rejected",
                 reason = "missing or invalid filename"
             )
         
-        print(f"Exporting to {const.IMAGES / filename}")
-        with open(const.IMAGES / filename, 'wb') as buffer:
+        with open(filename, 'wb') as buffer:
             while content := await file.read(1_024):
                 buffer.write(content)
 
-        return Result(
-                      # the or won't happen but my linter says otherwise
-            filename = file.filename or "(none)",
+            print(f"Uploaded a file of size: {buffer.tell():_} bytes")
+
+        return const.Result(
+            filename = filename.name,
             status = "saved",
             reason =  None
         )
@@ -92,16 +92,33 @@ async def upload_files(files: list[UploadFile] = File(...)):
         "results": results
     }
 
-#class Item(BaseModel):
-#    name: str
-#    price: int
-#    is_offer: bool | None = None
-#
-#@app.post("/items/")
-#def create_item(item: Item):
-#    return { "item": item }
-#
-#@app.get("/items/{item_id}")
-#def read_item(item_id: int, q: str | None = None) -> dict[str, Any]:
-#    return {"item_id": item_id, "q": q or "none"}
+@app.get("/attachments/{file_id}")
+async def serve_attachment(file_id: str):
+    file = Path(file_id)
+    target_dir = extras.get_target_dir(file.suffix)
 
+    if not target_dir:
+        raise HTTPException(
+            status_code=404,
+            detail=fr"File '{file}' not found"
+        ) 
+
+    file = target_dir / file.name
+    print(file)
+
+    if not file.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail="File not found"
+        )
+    
+    def iterfile() -> Iterator[bytes]:
+        with file.open("rb") as f:
+            yield from f
+
+    return StreamingResponse(
+        iterfile(),
+        media_type=const.MEDIA_TYPE_MAP.get(
+            file.suffix, "application/octet-stream"
+        )
+    )

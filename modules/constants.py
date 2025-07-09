@@ -1,6 +1,9 @@
 from pathlib import Path
 import logging
 
+from pydantic import BaseModel
+from typing import Optional
+
 '''
     * These will be constants that are used by the program
 '''
@@ -24,7 +27,7 @@ if not logger.handlers:
     logger.addHandler(stream_handler)
 
 #a private folder containing everything (video/image/json folders)
-_ASSETS = Path("Assets")
+_ASSETS = Path("excluded/Assets")
 
 #used folders
 VIDEOS = _ASSETS / "Videos"
@@ -34,7 +37,17 @@ JSONS = _ASSETS / "Json"
 #supported image/video extensions
 VIDEO_EXT: set[str] = { '.mp4', 'webm', '.mov' }
 IMAGE_EXT: set[str] = { '.jpg', '.jpeg', '.png', '.gif', '.webp', '.avif' }
-
+MEDIA_TYPE_MAP = {
+    '.mp4': 'video/mp4',
+    '.webm': 'video/webm',
+    '.mov': 'video/quicktime',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+    '.avif': 'image/avif'
+}
 
 #make sure folders are created
 _ASSETS.mkdir(exist_ok=True)
@@ -42,3 +55,9 @@ _ASSETS.mkdir(exist_ok=True)
 VIDEOS.mkdir(exist_ok=True)
 IMAGES.mkdir(exist_ok=True)
 JSONS.mkdir(exist_ok=True)
+
+# will be returned by "/upload"
+class Result(BaseModel):
+    filename: str | Path
+    status: str
+    reason: Optional[str]
