@@ -61,3 +61,5 @@ class Result(BaseModel):
     filename: str | Path
     status: str
     reason: Optional[str]
+
+CHUNK_SIZE = pow(1024, 2) # 1 MiB per chunk
