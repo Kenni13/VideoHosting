@@ -2,7 +2,9 @@ from pathlib import Path
 import logging
 
 from pydantic import BaseModel
+from typing import TypedDict
 from typing import Optional
+import asyncio
 
 '''
     * These will be constants that are used by the program
@@ -32,7 +34,7 @@ _ASSETS = Path("excluded/Assets")
 #used folders
 VIDEOS = _ASSETS / "Videos"
 IMAGES = _ASSETS / "Images"
-JSONS = _ASSETS / "Json"
+JSONS = _ASSETS / "JSONS"
 
 #supported image/video extensions
 VIDEO_EXT: set[str] = { '.mp4', 'webm', '.mov' }
@@ -54,12 +56,23 @@ _ASSETS.mkdir(exist_ok=True)
 
 VIDEOS.mkdir(exist_ok=True)
 IMAGES.mkdir(exist_ok=True)
-JSONS.mkdir(exist_ok=True)
+JSONS .mkdir(exist_ok=True)
+
+#thread limiter
+Semaphore = asyncio.Semaphore(3)
 
 # will be returned by "/upload"
 class Result(BaseModel):
     filename: str | Path
     status: str
     reason: Optional[str]
+
+# file metadata
+class Metadata(TypedDict):
+    original_name: str
+    uploaded_at: str
+    size_bytes: int
+    content_type: str
+    hash: str
 
 CHUNK_SIZE = pow(1024, 2) # 1 MiB per chunk

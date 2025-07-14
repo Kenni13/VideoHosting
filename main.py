@@ -4,16 +4,17 @@ from fastapi import (
 )
 from fastapi.responses import (
     StreamingResponse,
-    FileResponse
+    FileResponse, JSONResponse
 )
-from starlette.types import ExceptionHandler
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import aiofiles
 
 from pathlib import Path
-from typing import Iterator, cast
+from json import dumps
+from datetime import datetime, timezone
+import hashlib
 import asyncio
 
 import modules.extras as extras
@@ -24,66 +25,64 @@ app = FastAPI(
     redoc_url=None,
     openapi_url=None
 )
-
 limiter = Limiter(key_func=get_remote_address)
 
 app.state.limiter = limiter
 app.add_exception_handler(
     RateLimitExceeded,
-    cast(ExceptionHandler, _rate_limit_exceeded_handler)
+    _rate_limit_exceeded_handler # type:ignore
 )
 
-# test code
 @app.get("/")
 async def home():
     return {"Hello": "World"}
 
-#"Hello/Bo/HelloWorld.txt" -> Path("HelloWorld.txt")
-def check_filename(filename: str | None) -> Path | None:
-    if not filename: return None
-    
-    file: Path = Path(filename)
-    suffix: str = file.suffix.lower()
-
-    target_dir: Path | None = extras.get_target_dir(suffix)
-    if not target_dir:
-        return None
-    
-    candidate = target_dir / file.name
-    if not candidate.exists():
-        return candidate
-    
-    while True:
-        name = f"{file.stem}_{extras.generate_unique_name(8)}{suffix}"
-        candidate = target_dir / name
-
-        if not candidate.exists():
-            return candidate
-    
-
 #will handle files asynchronously
 # *hold on to the file size in the future*
 async def handle_file(file: UploadFile, sem: asyncio.Semaphore) -> const.Result:
+    if file.filename is None:
+        return const.Result(
+            filename="(none)",
+            status="rejected",
+            reason="missing filename"
+        )
+
     async with sem:
         print(f"Handling file: {file.filename}")
 
-        filename: Path | None = check_filename(file.filename)
+        filename: Path | None = extras.check_filename(file.filename)
         if not filename:
             return const.Result(
-                filename = file.filename or "(none)",
-                status = "rejected",
-                reason = "missing or invalid filename"
+                filename=file.filename or "(none)",
+                status="rejected",
+                reason=f"Unsupported file type: '{file.filename}'"
             )
-        
-        async with aiofiles.open(filename, 'wb') as buffer:
+
+        async with aiofiles.open(filename, 'wb') as buffer, \
+            aiofiles.open(const.JSONS / (filename.stem + ".json"), 'w') as metadata:
+            sha256 = hashlib.sha256()
+
             while content := await file.read(1_024):
+                sha256.update(content)
                 await buffer.write(content)
 
-            print(f"Uploaded a file of size: {buffer.tell():_} bytes")
+            size = await buffer.tell()
+
+            await metadata.write(dumps(const.Metadata(
+                original_name=file.filename,
+                uploaded_at=f'{datetime.now():%a %b %d %-I:%M %p}',
+                size_bytes=size,
+                content_type=const.MEDIA_TYPE_MAP.get(
+                    filename.suffix, "application/octet-stream"),
+                hash = sha256.hexdigest()
+
+            ), indent=4))
+            #const.MetaData_Buffer.append(const.Metadata(
+            #))
 
         return const.Result(
             filename = filename.name,
-            status = "saved",
+            status = "accepted",
             reason =  None
         )
     
@@ -95,64 +94,69 @@ async def handle_file(file: UploadFile, sem: asyncio.Semaphore) -> const.Result:
 @app.post("/upload")
 @limiter.limit("5/minute")  # type: ignore
 async def upload_files(request: Request, files: list[UploadFile] = File(..., max_length=10)):
-    sem = asyncio.Semaphore(3)
 
     tasks = [
-        handle_file(file, sem)
+        handle_file(file, const.Semaphore)
         for file in files
     ]
 
     results = await asyncio.gather(*tasks)
 
+    # flush metadata
+    #with const.JSON_LOCK:
+    #    with const.JSON.open("w") as file:
+    #        file.write(dumps(const.MetaData_Buffer, indent=4))
+
     return {
         "results": results
     }
 
-def handle_range(range: str):
-    byte_range = range.strip().split('=')[-1]
-    
-    start_str, end_str = byte_range.split('-')
+@app.delete("/delete")
+@limiter.limit("5/minute") #type:ignore
+async def delete_files(request: Request, files: list[Path]):
 
-    start = int(start_str) if start_str else None
-    end = int(end_str) if end_str else None
+    errors: list[str]  = []
+    deleted: list[str] = []
 
-    if not (start and end):
-        return None
-    
-    return start, end
+    for file in files:
+        result, err = extras.attempt_delete(file)
 
-def iterfile(path: Path, start_pos: int, end_pos: int) -> Iterator[bytes]:
-    chunk_size = end_pos - start_pos + 1
-    with path.open("rb") as file:
-        file.seek(start_pos)
-        remaining = chunk_size
+        if not result and err:
+            errors.append(err)
+        else:
+            deleted.append(f'deleted {file.name}')
 
-        while remaining > 0:
-            chunk = file.read(min(const.CHUNK_SIZE, remaining))
+    return {
+        "deleted": deleted,
+        "errors": errors
+    }
+    #if errors:
+    #    return JSONResponse(
+    #        {"errors": errors},
+    #        status_code=404
+    #    )
 
-            if not chunk:
-                break
-            yield chunk
-            remaining -= len(chunk)
+    #return {
+    #    "status": "ok"
+    #}
 
-@app.get("/attachments/{video_id}")
+@app.get("/attachments/{file_id}")
 @limiter.limit("100/minute") # type:ignore
 async def serve_video(
     request: Request,
-    video_id: Path,
+    file_id: Path,
     range: str = Header(None, convert_underscores=False), # "Range"  header
     accept: str = Header("", alias="Accept")              # "Accept" header
-) -> FileResponse | StreamingResponse:
-
+):
     #file validation.
-    target_dir = extras.get_target_dir(video_id.suffix)
+    target_dir = extras.get_target_dir(file_id.suffix)
     if not target_dir:
         raise HTTPException(
             status_code=404,
-            detail=f"Unsupported file type: '{video_id}'"
+            detail=f"Unsupported file type: '{file_id}'"
         )
 
-    file = target_dir / video_id
+    file = target_dir / file_id
     if not file.is_file():
         raise HTTPException(
             status_code=404,
@@ -169,7 +173,13 @@ async def serve_video(
             path=file,
             media_type="application/octet-stream",
             filename=file.name,
-            headers={"Content-Disposition": f"attachment; filename=\"{file.name}\""}
+            headers={
+                "Content-Disposition": f"attachment; filename=\"{file.name}\"",
+
+                # caching
+                #"Cache-Control": "public, max-age=86400, immutable",  # 1 day
+                #"ETag": f'"{file.stat().st_mtime_ns}"',
+            }
         )
 
     # smart streaming
@@ -179,24 +189,32 @@ async def serve_video(
 
     if range:
         try:
-            res = handle_range(range)
+            res = extras.handle_range(range)
             if not res: raise Exception("E")
             start, end = res
         except Exception:
             start, end = 0, file_size - 1
 
     chunk_size = (end - start) + 1
+    file_stat = file.stat()
+    file_size=  file_stat.st_size
 
     headers = {
         "Content-Range": f"bytes {start}-{end}/{file_size}",
         "Accept-Ranges": "bytes",
         "Content-Length": str(chunk_size),
-        "Content-Type": const.MEDIA_TYPE_MAP.get(file.suffix, "application/octet-stream") 
+        "Content-Type": const.MEDIA_TYPE_MAP.get(file.suffix, "application/octet-stream"),
+
+        #"Cache-Control": "public, max-age=86400, immutable",  # 1 day cache
+        #"ETag": f'"{file_stat.st_mtime_ns}"',
+        #"Last-Modified": datetime.fromtimestamp(
+        #    file_stat.st_mtime, tz=timezone.utc
+        #).strftime('%a, %d %b %Y %H:%M:%S GMT'),
     }
 
     status_code = 206 if range else 200
     return StreamingResponse(
-        iterfile(file, start, end),
+        extras.iterfile(file, start, end),
         status_code=status_code,
         headers=headers
     )
