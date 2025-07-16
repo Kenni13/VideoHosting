@@ -130,15 +130,6 @@ async def delete_files(request: Request, files: list[Path]):
         "deleted": deleted,
         "errors": errors
     }
-    #if errors:
-    #    return JSONResponse(
-    #        {"errors": errors},
-    #        status_code=404
-    #    )
-
-    #return {
-    #    "status": "ok"
-    #}
 
 @app.get("/attachments/{file_id}")
 @limiter.limit("100/minute") # type:ignore
