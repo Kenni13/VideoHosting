@@ -139,11 +139,6 @@ async def upload_files(request: Request, files: list[UploadFile] = File(..., max
 
     results = await asyncio.gather(*tasks)
 
-    # flush metadata
-    #with const.JSON_LOCK:
-    #    with const.JSON.open("w") as file:
-    #        file.write(dumps(const.MetaData_Buffer, indent=4))
-
     return {
         "results": results
     }
@@ -205,8 +200,8 @@ async def serve_video(
                 "Content-Disposition": f"attachment; filename=\"{file.name}\"",
 
                 # caching
-                #"Cache-Control": "public, max-age=86400, immutable",  # 1 day
-                #"ETag": f'"{file.stat().st_mtime_ns}"',
+                "Cache-Control": "public, max-age=86400, immutable",  # 1 day
+                "ETag": f'"{file.stat().st_mtime_ns}"',
             }
         )
 
@@ -233,11 +228,11 @@ async def serve_video(
         "Content-Length": str(chunk_size),
         "Content-Type": const.MEDIA_TYPE_MAP.get(file.suffix, "application/octet-stream"),
 
-        #"Cache-Control": "public, max-age=86400, immutable",  # 1 day cache
-        #"ETag": f'"{file_stat.st_mtime_ns}"',
-        #"Last-Modified": datetime.fromtimestamp(
-        #    file_stat.st_mtime, tz=timezone.utc
-        #).strftime('%a, %d %b %Y %H:%M:%S GMT'),
+        "Cache-Control": "public, max-age=86400, immutable",  # 1 day cache
+        "ETag": f'"{file_stat.st_mtime_ns}"',
+        "Last-Modified": datetime.fromtimestamp(
+            file_stat.st_mtime, tz=timezone.utc
+        ).strftime('%a, %d %b %Y %H:%M:%S GMT'),
     }
 
     status_code = 206 if range else 200
