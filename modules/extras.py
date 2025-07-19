@@ -1,7 +1,11 @@
+import orjson
+import aiofiles
+
 import secrets
-import modules.constants as const
 from typing import Iterator
 from pathlib import Path
+
+import modules.constants as const
 
 def generate_unique_name(size: int = 16) -> str:
     return secrets.token_hex(size)
@@ -54,26 +58,60 @@ def attempt_delete(file: Path) -> tuple[bool, str | None]:
     file.unlink()
     return True, None 
 
+async def create_metadata(metadata: const.Metadata):
+    async with aiofiles.open(const.JSONS / metadata['name'], "wb") as file:
+        await file.write(orjson.dumps(metadata))
+
 #"Hello/Bo/HelloWorld.txt" -> Path("HelloWorld.txt")
-def check_filename(filename: str) -> Path | None:
-    
-    file: Path = Path(filename)
-    suffix: str = file.suffix.lower()
+#def check_filename(filename: str) -> Path | None:
+#    
+#    file: Path = Path(filename)
+#    suffix: str = file.suffix.lower()
+#
+#    target_dir: Path | None = get_target_dir(suffix)
+#    if not target_dir:
+#        return None
+#    
+#    candidate = target_dir / file.name
+#    if not candidate.exists():
+#        return candidate
+#    
+#    while True:
+#        name = f"{file.stem}_{generate_unique_name(8)}{suffix}"
+#        candidate = target_dir / name
+#
+#        if not candidate.exists():
+#            return candidate
 
-    target_dir: Path | None = get_target_dir(suffix)
-    if not target_dir:
-        return None
-    
-    candidate = target_dir / file.name
-    if not candidate.exists():
-        return candidate
-    
-    while True:
-        name = f"{file.stem}_{generate_unique_name(8)}{suffix}"
-        candidate = target_dir / name
-
-        if not candidate.exists():
-            return candidate
+#def _light_clean():
+#    files: list[Path] = list(const.JSONS.iterdir())
+#
+#    seen: set[Path] = set()
+#    
+#    for file in const.JSONS.iterdir():
+#        if not file in seen:
+#            seen.add(file)
+#            continue
+#
+#        try:
+#            file.unlink(missing_ok=True)
+#        except Exception as e:
+#            const.logger.error(f"Failed to delete {file} reason: {e}")
+#
+#     
+#
+#def _heavy_clean():
+#    for file in const.JSONS.iterdir():
+#        try:
+#            file.unlink(missing_ok=True)
+#        except Exception as e:
+#            const.logger.error(f"Failed to delete {file} reason: {e}")
+#
+#def clean(light: bool=True):
+#    if light:
+#        _light_clean()
+#    else:
+#        _heavy_clean()
 
 '''
     * Create a clean up function

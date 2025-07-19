@@ -1,9 +1,12 @@
-from pathlib import Path
-import logging
-
 from pydantic import BaseModel
+
+from pathlib import Path
 from typing import TypedDict
 from typing import Optional
+
+import logging
+import os
+import enum
 import asyncio
 
 '''
@@ -29,15 +32,16 @@ if not logger.handlers:
     logger.addHandler(stream_handler)
 
 #a private folder containing everything (video/image/json folders)
-_ASSETS = Path("excluded/Assets")
+_ASSETS = Path(os.getenv("ASSETS_DIR", "excluded/Assets"))
 
 #used folders
 VIDEOS = _ASSETS / "Videos"
 IMAGES = _ASSETS / "Images"
 JSONS = _ASSETS / "JSONS"
+TEMP = _ASSETS / "TEMP"
 
 #supported image/video extensions
-VIDEO_EXT: set[str] = { '.mp4', 'webm', '.mov' }
+VIDEO_EXT: set[str] = { '.mp4', '.webm', '.mov' }
 IMAGE_EXT: set[str] = { '.jpg', '.jpeg', '.png', '.gif', '.webp', '.avif' }
 MEDIA_TYPE_MAP = {
     '.mp4': 'video/mp4',
@@ -57,22 +61,28 @@ _ASSETS.mkdir(exist_ok=True)
 VIDEOS.mkdir(exist_ok=True)
 IMAGES.mkdir(exist_ok=True)
 JSONS .mkdir(exist_ok=True)
+TEMP  .mkdir(exist_ok=True)
 
 #thread limiter
 Semaphore = asyncio.Semaphore(3)
 
+class Status(enum.Enum):
+    REJECTED = "rejected"
+    ACCEPTED = "accepted"
+    DUPLICATE = "duplicate"
+
 # will be returned by "/upload"
 class Result(BaseModel):
     filename: str | Path
-    status: str
+    status: Status
     reason: Optional[str]
 
 # file metadata
 class Metadata(TypedDict):
-    original_name: str
+    name: str 
+    original: str
     uploaded_at: str
     size_bytes: int
     content_type: str
-    hash: str
 
 CHUNK_SIZE = pow(1024, 2) # 1 MiB per chunk

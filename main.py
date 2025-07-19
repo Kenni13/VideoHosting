@@ -4,18 +4,19 @@ from fastapi import (
 )
 from fastapi.responses import (
     StreamingResponse,
-    FileResponse, JSONResponse
+    FileResponse
 )
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import aiofiles
+import orjson
 
 from pathlib import Path
-from json import dumps
 from datetime import datetime, timezone
 import hashlib
 import asyncio
+import secrets
 
 import modules.extras as extras
 import modules.constants as const
@@ -43,57 +44,93 @@ async def handle_file(file: UploadFile, sem: asyncio.Semaphore) -> const.Result:
     if file.filename is None:
         return const.Result(
             filename="(none)",
-            status="rejected",
+            status=const.Status.REJECTED,
             reason="missing filename"
         )
 
     async with sem:
         print(f"Handling file: {file.filename}")
-
-        filename: Path | None = extras.check_filename(file.filename)
-        if not filename:
+        filename = Path(file.filename)
+        target_dir = extras.get_target_dir(filename.suffix)
+        if not target_dir:
             return const.Result(
-                filename=file.filename or "(none)",
-                status="rejected",
-                reason=f"Unsupported file type: '{file.filename}'"
+               filename=file.filename or "(none)",
+               status=const.Status.REJECTED,
+               reason=f"Unsupported file type: '{file.filename}'"
+           )
+
+        # create a temporary file (so I don't have to load the contents into memory)
+        # where are python temporary scopes when you need em?
+        rfilename = secrets.token_hex(32)
+        file_hash = hashlib.sha256()
+
+        async with aiofiles.open(const.TEMP / rfilename, 'wb') as rbuffer:
+            while content := await file.read(65536): # 64KB
+                file_hash.update(content)
+                await rbuffer.write(content)
+
+            size: int = await rbuffer.tell()
+
+        # now we check if file already exists using our hash
+        hash_filename = target_dir / (file_hash.hexdigest() + filename.suffix)
+
+        if hash_filename.is_file():
+
+            try:
+                (const.TEMP / rfilename).unlink(missing_ok=True)
+            except Exception as e:
+                const.logger.error(f"Failed to delete {rfilename} reason: {e}")
+
+            return const.Result(
+                filename=hash_filename.name,
+                status=const.Status.DUPLICATE,
+                reason=f"{hash_filename.name} is a duplicate file"
             )
 
-        async with aiofiles.open(filename, 'wb') as buffer, \
-            aiofiles.open(const.JSONS / (filename.stem + ".json"), 'w') as metadata:
-            sha256 = hashlib.sha256()
+        temp = const.TEMP / rfilename
 
-            while content := await file.read(1_024):
-                sha256.update(content)
-                await buffer.write(content)
+        try:
+            temp.rename(hash_filename)
+        except Exception as e:
+            const.logger.error(f"Failed to rename {rfilename} to {hash_filename.name}: {e}")
 
-            size = await buffer.tell()
+            # delete lingering files if it failed
+            try:
+                temp.unlink(missing_ok=True)
+            except Exception as e:
+                const.logger.error(f"Failed to delete {rfilename}")
 
-            await metadata.write(dumps(const.Metadata(
-                original_name=file.filename,
-                uploaded_at=f'{datetime.now():%a %b %d %-I:%M %p}',
-                size_bytes=size,
-                content_type=const.MEDIA_TYPE_MAP.get(
-                    filename.suffix, "application/octet-stream"),
-                hash = sha256.hexdigest()
+            return const.Result (
+                filename=file.filename,
+                status=const.Status.REJECTED,
+                reason="Failed to save file"
+            )
 
-            ), indent=4))
-            #const.MetaData_Buffer.append(const.Metadata(
-            #))
+        await extras.create_metadata(const.Metadata(
+            name=hash_filename.with_suffix(".json").name,
+            original=file.filename,
+            uploaded_at=f'{datetime.now():%a %b %d %-I:%M %p}',
+            size_bytes=size,
+            content_type=const.MEDIA_TYPE_MAP.get(
+                filename.suffix, "application/octet-stream"),
+        ))
+
+        print("Done!")
 
         return const.Result(
-            filename = filename.name,
-            status = "accepted",
-            reason =  None
+            filename=hash_filename.name,
+            status=const.Status.ACCEPTED,
+            reason= None
         )
-    
-    '''
-        * So far this uploads a file with the correct suffix.
-        * Will add salting if there are duplicates
-    '''
 
 @app.post("/upload")
 @limiter.limit("5/minute")  # type: ignore
 async def upload_files(request: Request, files: list[UploadFile] = File(..., max_length=10)):
+    if len(files) > 5:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File limit is 5 but received {len(files)}"
+        )
 
     tasks = [
         handle_file(file, const.Semaphore)
@@ -144,10 +181,10 @@ async def serve_video(
     if not target_dir:
         raise HTTPException(
             status_code=404,
-            detail=f"Unsupported file type: '{file_id}'"
+            detail=f"File is not found"
         )
 
-    file = target_dir / file_id
+    file = target_dir / file_id.name
     if not file.is_file():
         raise HTTPException(
             status_code=404,
@@ -222,3 +259,14 @@ async def list_files():
             for image in const.IMAGES.iterdir()
         ]
     }
+
+@app.get("/file/{file_id}")
+async def list_file(file_id: Path) -> dict[str, str | int]:
+    filename = const.JSONS / (file_id.stem + ".json")
+    if not filename.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail=f"File {file_id} not found"
+        )
+
+    return orjson.loads(filename.read_text())
